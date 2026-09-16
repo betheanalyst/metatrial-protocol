@@ -1,0 +1,43 @@
+{
+  "name": "metatrial-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MetaTrial frontend application",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "compat-gate": "npm run test && node scripts/compat-gate.mjs"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "5.102.8",
+    "clsx": "^2.1.1",
+    "framer-motion": "^13.2.0",
+    "genlayer-js": "2.0.0-rc.1",
+    "lucide-react": "^1.45.0",
+    "next": "15.3.9",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "tailwind-merge": "^2.5.2",
+    "viem": "^2.50.4"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.1",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9.25.0",
+    "eslint-config-next": "15.3.9",
+    "postcss": "^8.4.49",
+    "tailwindcss": "3.4.19",
+    "typescript": "5.9.3",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

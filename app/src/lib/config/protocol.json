@@ -1,0 +1,19 @@
+{
+  "network": {
+    "name": "GenLayer Studio Devnet",
+    "chainId": 61997,
+    "chainIdHex": "0xf22d",
+    "rpcUrl": "https://studio-dev.genlayer.com/api",
+    "nativeCurrency": {
+      "name": "GEN",
+      "symbol": "GEN",
+      "decimals": 18
+    },
+    "blockExplorerUrl": "https://explorer-studio-dev.genlayer.com"
+  },
+  "contracts": {
+    "core": "0xC9e9d5Dc053b14eebd945D833b126eEa8c8f11c6",
+    "governance": "0xb8664C72316C892D641C348A3148225945615F79",
+    "attestationRegistry": "0x9bFD0300654EbB182b1639706e48dA863Db81ea3"
+  }
+}
