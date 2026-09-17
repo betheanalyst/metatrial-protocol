@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { isAddress } from "viem";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
+  disputeExists,
   getLastDisputeId,
   getDisputeStatus,
   getProtocolHealth,
@@ -913,12 +914,14 @@ function PreflightChecks({ input }: { input: SubmitDisputeInput }) {
     queries: input.precedentDisputeIds.map((disputeId) => ({
       queryKey: ["metatrial", "precedent-check", disputeId],
       queryFn: async () => {
-        try {
-          const status = await getDisputeStatus(disputeId);
-          return { disputeId, status, exists: true };
-        } catch {
+        // dispute_exists returns false without reverting - avoids the
+        // SDK's console.error for reverting reads on browsing paths.
+        const exists = (await disputeExists(disputeId)) === true;
+        if (exists === false) {
           return { disputeId, status: "", exists: false };
         }
+        const status = await getDisputeStatus(disputeId);
+        return { disputeId, status, exists: true };
       },
       staleTime: 30_000,
       retry: false,

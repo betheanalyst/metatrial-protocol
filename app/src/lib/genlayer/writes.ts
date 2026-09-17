@@ -1,6 +1,7 @@
 import { createClient, isSuccessful } from "genlayer-js";
 import { studioDevnet } from "genlayer-js/chains";
 import type { CalldataEncodable } from "genlayer-js/types";
+import { zeroAddress } from "viem";
 import { CONTRACTS } from "../config/protocol";
 import { describeWriteFailure } from "../metatrial/write-errors";
 import type { Eip1193Provider } from "../wallet/injected";
@@ -61,17 +62,39 @@ const RETRIES_SIMPLE = 100;
 const RETRIES_ARBITRATION = 240;
 
 /**
- * Policy-based fee estimate (never executes the contract). When
- * totalMessageFees is provided, the distribution declares message emission
- * with that budget - required for writes whose execution emits messages.
+ * The minimal message-fee allocation tree for a write whose execution emits
+ * GenVM-internal (Mode1) messages - a root Internal allocation funded at the
+ * network's own declared minimum (messageFeeParamsBudgetFloor, read live).
+ * normalizeMessageFeeAllocations fills the rest of the node (root parent,
+ * wildcard call key, "0x" fee params, onAcceptance=true).
+ */
+function buildMessageFeeTree(budget: bigint) {
+  return [
+    {
+      messageType: 1, // MessageType.Internal - GenVM-emitted (Mode1) messages
+      recipient: zeroAddress,
+      budget,
+    },
+  ];
+}
+
+/**
+ * Policy-based fee estimate (never executes the contract - the MetaTrial
+ * contracts read the transaction timestamp, which simulated gen_call does
+ * not carry, so simulation always fails for these contracts and three
+ * doomed RPC retries only add latency and console noise). When a message
+ * budget is provided, the distribution declares a message-fee allocation
+ * tree - required for writes whose execution emits messages.
  */
 async function estimatePolicyBasedFees(
   client: ReturnType<typeof createSigningClient>,
-  feeOptions: { totalMessageFees?: bigint },
+  feeOptions: { messageBudget?: bigint },
 ) {
   return client.estimateTransactionFees({
-    ...(feeOptions.totalMessageFees !== undefined
-      ? { totalMessageFees: feeOptions.totalMessageFees }
+    ...(feeOptions.messageBudget !== undefined
+      ? {
+          messageAllocations: buildMessageFeeTree(feeOptions.messageBudget),
+        }
       : {}),
   });
 }
@@ -162,20 +185,20 @@ async function performWrite(opts: {
 
   let hash: string;
   try {
-    // Simulation-based estimation is accurate only when the write can
-    // execute in the sandbox: a simulated gen_call cannot execute AI/nondet
-    // calls at all, so emitting writes go straight to the policy-based
-    // estimate with a declared message budget (this also skips three doomed
-    // sim RPC retries and the console noise they produce).
+    // Always policy-based: the simulated estimator cannot execute these
+    // contracts (they validate the transaction timestamp, which simulated
+    // gen_call does not carry), so simulating only burns three doomed RPC
+    // retries before the same policy-based estimate.
     const recommended = await (opts.emitsMessages === true
-      ? estimatePolicyBasedFees(client, { totalMessageFees: await readMessageFeeFloor(client) })
-      : client
-          .estimateTransactionFeesForWrite(call)
-          .catch(() => estimatePolicyBasedFees(client, {})));
+      ? estimatePolicyBasedFees(client, {
+          messageBudget: await readMessageFeeFloor(client),
+        })
+      : estimatePolicyBasedFees(client, {}));
     hash = await client.writeContract({
       ...call,
       fees: {
         distribution: recommended.distribution,
+        messageAllocations: recommended.messageAllocations,
         feeValue: recommended.feeValue,
       },
     });

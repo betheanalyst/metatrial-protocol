@@ -29,6 +29,7 @@ import { formatDateTime } from "@/lib/utils/format";
 import { ButtonLink } from "@/components/ui/button";
 import { Container } from "@/components/ui/container";
 import { AddressChip, CaseIdChip, StatusPill } from "./case-parts";
+import { CopyableId } from "./copyable-id";
 import { RespondPanel } from "./respond-panel";
 import { AppealPanel } from "./appeal-panel";
 import { SettlementSection } from "./settlement-section";
@@ -262,6 +263,7 @@ export function CaseView({ disputeId }: { disputeId: string }) {
       <header>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <CaseIdChip disputeId={detail.id} caseNumber={detail.caseNumber} />
+          <CopyableId id={detail.id} label="Case ID" />
           <span className="rounded-full bg-attest-tint px-2.5 py-0.5 text-xs font-medium text-attest-deep">
             {detail.categoryLabel}
           </span>

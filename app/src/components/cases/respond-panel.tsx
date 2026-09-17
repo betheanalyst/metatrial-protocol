@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { getInjectedProvider } from "@/lib/wallet/injected";
 import { useWallet } from "@/lib/wallet/wallet-context";
 import { respondToDispute } from "@/lib/genlayer/writes";
+import { formatDateTime } from "@/lib/utils/format";
 import type { CaseDetail } from "@/lib/metatrial/types";
 import { cn } from "@/lib/utils/cn";
 import { TransactionFlow } from "@/components/writes/transaction-flow";
@@ -110,10 +111,19 @@ export function RespondPanel({ detail }: { detail: CaseDetail }) {
   const hasEvidence = evidenceType !== null;
   const hasSomething = statement.trim() !== "" || hasEvidence;
 
+  const windowPassed = Date.now() / 1000 > detail.participation.deadline;
+
   return (
     <TransactionFlow
       triggerLabel="Sign & submit response"
-      disabled={hasSomething === false}
+      disabled={hasSomething === false || windowPassed === true}
+      disabledReason={
+        windowPassed === true
+          ? `The participation window closed at ${formatDateTime(detail.participation.deadline)} - the claimant can now start the review.`
+          : hasSomething === false
+            ? "Add a statement or evidence before submitting."
+            : undefined
+      }
       review={
         <div className="space-y-5">
           <p className="text-sm leading-relaxed text-ink">

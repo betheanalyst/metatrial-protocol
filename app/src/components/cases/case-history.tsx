@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { cn } from "@/lib/utils/cn";
+import { CopyableId } from "./copyable-id";
 import { formatDateTime } from "@/lib/utils/format";
 import { shortenAddress } from "@/lib/utils/format";
 import type { AppealEntry, Attestation, Determination } from "@/lib/metatrial/types";
@@ -213,9 +214,9 @@ export function CaseFinalRecord({
               <>
                 <dl className="mt-5 flex flex-col gap-2 text-sm">
                   <div className="flex items-center justify-between gap-4">
-                    <dt className="text-muted">Case</dt>
-                    <dd className="font-mono text-xs text-ink" title={attestation.id}>
-                      {attestation.id}
+                    <dt className="text-muted">Attestation ID</dt>
+                    <dd>
+                      <CopyableId id={attestation.id} />
                     </dd>
                   </div>
                   <div className="flex items-center justify-between gap-4">
