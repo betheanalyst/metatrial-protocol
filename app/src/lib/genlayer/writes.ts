@@ -1,4 +1,8 @@
-import { createClient, isSuccessful } from "genlayer-js";
+import {
+  createClient,
+  encodeInternalMessageFeeParams,
+  isSuccessful,
+} from "genlayer-js";
 import { studioDevnet } from "genlayer-js/chains";
 import type { CalldataEncodable } from "genlayer-js/types";
 import { zeroAddress } from "viem";
@@ -68,12 +72,16 @@ const RETRIES_ARBITRATION = 240;
  * normalizeMessageFeeAllocations fills the rest of the node (root parent,
  * wildcard call key, "0x" fee params, onAcceptance=true).
  */
-function buildMessageFeeTree(budget: bigint) {
+function buildMessageFeeTree(budget: bigint, feeParams: `0x${string}`) {
   return [
     {
       messageType: 1, // MessageType.Internal - GenVM-emitted (Mode1) messages
       recipient: zeroAddress,
       budget,
+      // Mode1 fee params: how the emitted message's own consensus work is
+      // priced. Mirrors the parent transaction's distribution so the child
+      // emission is bounded by the same caps the sender approved.
+      feeParams,
     },
   ];
 }
@@ -88,12 +96,16 @@ function buildMessageFeeTree(budget: bigint) {
  */
 async function estimatePolicyBasedFees(
   client: ReturnType<typeof createSigningClient>,
-  feeOptions: { messageBudget?: bigint },
+  feeOptions: { messageBudget?: bigint; messageFeeParams?: `0x${string}` },
 ) {
   return client.estimateTransactionFees({
-    ...(feeOptions.messageBudget !== undefined
+    ...(feeOptions.messageBudget !== undefined &&
+    feeOptions.messageFeeParams !== undefined
       ? {
-          messageAllocations: buildMessageFeeTree(feeOptions.messageBudget),
+          messageAllocations: buildMessageFeeTree(
+            feeOptions.messageBudget,
+            feeOptions.messageFeeParams,
+          ),
         }
       : {}),
   });
@@ -122,6 +134,45 @@ async function readMessageFeeFloor(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Fee estimate for message-emitting writes (AI arbitration calls, async
+ * cross-contract notifications), in two passes:
+ *
+ *   1. Parent distribution from the live policy (no allocations).
+ *   2. A message allocation tree - one root Internal node, budgeted at the
+ *      network's declared messageFeeParamsBudgetFloor (read live) - whose
+ *      Mode1 feeParams mirror the parent distribution, so the emitted
+ *      messages are priced under the same caps the sender approved.
+ *
+ * The tree is what consensus requires for fee-bearing GenVM emissions
+ * (Mode1MessageFeesRequireGenVMPerEmissionSupport / no_matching_allocation).
+ */
+async function estimateEmittingWriteFees(
+  client: ReturnType<typeof createSigningClient>,
+) {
+  const base = await estimatePolicyBasedFees(client, {});
+  const floor = await readMessageFeeFloor(client);
+  if (floor === undefined) {
+    throw new Error(
+      "The network's message-fee floor (sim_getFeeConfig) could not be read.",
+    );
+  }
+  return estimatePolicyBasedFees(client, {
+    messageBudget: floor,
+    messageFeeParams: encodeInternalMessageFeeParams({
+      leaderTimeunitsAllocation: base.distribution.leaderTimeunitsAllocation,
+      validatorTimeunitsAllocation:
+        base.distribution.validatorTimeunitsAllocation,
+      appealRounds: base.distribution.appealRounds,
+      executionBudgetPerRound: base.distribution.executionBudgetPerRound,
+      rotations: base.distribution.rotations,
+      maxPriceGenPerTimeUnit: base.distribution.maxPriceGenPerTimeUnit,
+      storageFeeMaxGasPrice: base.distribution.storageFeeMaxGasPrice,
+      receiptFeeMaxGasPrice: base.distribution.receiptFeeMaxGasPrice,
+    }),
+  });
 }
 
 async function performWrite(opts: {
@@ -190,9 +241,7 @@ async function performWrite(opts: {
     // gen_call does not carry), so simulating only burns three doomed RPC
     // retries before the same policy-based estimate.
     const recommended = await (opts.emitsMessages === true
-      ? estimatePolicyBasedFees(client, {
-          messageBudget: await readMessageFeeFloor(client),
-        })
+      ? estimateEmittingWriteFees(client)
       : estimatePolicyBasedFees(client, {}));
     hash = await client.writeContract({
       ...call,
