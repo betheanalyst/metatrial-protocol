@@ -1,11 +1,6 @@
-import {
-  createClient,
-  encodeInternalMessageFeeParams,
-  isSuccessful,
-} from "genlayer-js";
+import { createClient, isSuccessful } from "genlayer-js";
 import { studioDevnet } from "genlayer-js/chains";
 import type { CalldataEncodable } from "genlayer-js/types";
-import { zeroAddress } from "viem";
 import { CONTRACTS } from "../config/protocol";
 import { describeWriteFailure } from "../metatrial/write-errors";
 import type { Eip1193Provider } from "../wallet/injected";
@@ -66,56 +61,11 @@ const RETRIES_SIMPLE = 100;
 const RETRIES_ARBITRATION = 240;
 
 /**
- * The minimal message-fee allocation tree for a write whose execution emits
- * GenVM-internal (Mode1) messages - a root Internal allocation funded at the
- * network's own declared minimum (messageFeeParamsBudgetFloor, read live).
- * normalizeMessageFeeAllocations fills the rest of the node (root parent,
- * wildcard call key, "0x" fee params, onAcceptance=true).
+ * The network's own declared floor for per-round GenVM execution budgets,
+ * read live from sim_getFeeConfig (genvmStartBudgetFloor). Returns
+ * undefined when unavailable.
  */
-function buildMessageFeeTree(budget: bigint, feeParams: `0x${string}`) {
-  return [
-    {
-      messageType: 1, // MessageType.Internal - GenVM-emitted (Mode1) messages
-      recipient: zeroAddress,
-      budget,
-      // Mode1 fee params: how the emitted message's own consensus work is
-      // priced. Mirrors the parent transaction's distribution so the child
-      // emission is bounded by the same caps the sender approved.
-      feeParams,
-    },
-  ];
-}
-
-/**
- * Policy-based fee estimate (never executes the contract - the MetaTrial
- * contracts read the transaction timestamp, which simulated gen_call does
- * not carry, so simulation always fails for these contracts and three
- * doomed RPC retries only add latency and console noise). When a message
- * budget is provided, the distribution declares a message-fee allocation
- * tree - required for writes whose execution emits messages.
- */
-async function estimatePolicyBasedFees(
-  client: ReturnType<typeof createSigningClient>,
-  feeOptions: { messageBudget?: bigint; messageFeeParams?: `0x${string}` },
-) {
-  return client.estimateTransactionFees({
-    ...(feeOptions.messageBudget !== undefined &&
-    feeOptions.messageFeeParams !== undefined
-      ? {
-          messageAllocations: buildMessageFeeTree(
-            feeOptions.messageBudget,
-            feeOptions.messageFeeParams,
-          ),
-        }
-      : {}),
-  });
-}
-
-/**
- * The network's own declared minimum budget for message fee params, read
- * live from sim_getFeeConfig. Returns undefined when unavailable.
- */
-async function readMessageFeeFloor(
+async function readExecutionBudgetFloor(
   client: ReturnType<typeof createSigningClient>,
 ): Promise<bigint | undefined> {
   try {
@@ -123,9 +73,9 @@ async function readMessageFeeFloor(
       method: "sim_getFeeConfig",
       params: [],
     })) as {
-      policy?: { messageFeeParamsBudgetFloor?: string | number | bigint };
+      policy?: { genvmStartBudgetFloor?: string | number | bigint };
     } | null;
-    const raw = config?.policy?.messageFeeParamsBudgetFloor;
+    const raw = config?.policy?.genvmStartBudgetFloor;
     if (raw === undefined || raw === null) {
       return undefined;
     }
@@ -137,41 +87,21 @@ async function readMessageFeeFloor(
 }
 
 /**
- * Fee estimate for message-emitting writes (AI arbitration calls, async
- * cross-contract notifications), in two passes:
- *
- *   1. Parent distribution from the live policy (no allocations).
- *   2. A message allocation tree - one root Internal node, budgeted at the
- *      network's declared messageFeeParamsBudgetFloor (read live) - whose
- *      Mode1 feeParams mirror the parent distribution, so the emitted
- *      messages are priced under the same caps the sender approved.
- *
- * The tree is what consensus requires for fee-bearing GenVM emissions
- * (Mode1MessageFeesRequireGenVMPerEmissionSupport / no_matching_allocation).
+ * Policy-based fee estimate, tuned to a distribution this devnet's consensus
+ * accepts (measured on a live AI write of the same shape: per-round GenVM
+ * execution budget at the network's genvmStartBudgetFloor, totalMessageFees
+ * zero, SDK-standard price caps with headroom, rotations from the chain's
+ * consensus-max). The full deposit is taken up-front and the unused budget
+ * is refunded after execution.
  */
-async function estimateEmittingWriteFees(
+async function estimatePolicyBasedFees(
   client: ReturnType<typeof createSigningClient>,
+  feeOptions: { executionBudgetPerRound?: bigint },
 ) {
-  const base = await estimatePolicyBasedFees(client, {});
-  const floor = await readMessageFeeFloor(client);
-  if (floor === undefined) {
-    throw new Error(
-      "The network's message-fee floor (sim_getFeeConfig) could not be read.",
-    );
-  }
-  return estimatePolicyBasedFees(client, {
-    messageBudget: floor,
-    messageFeeParams: encodeInternalMessageFeeParams({
-      leaderTimeunitsAllocation: base.distribution.leaderTimeunitsAllocation,
-      validatorTimeunitsAllocation:
-        base.distribution.validatorTimeunitsAllocation,
-      appealRounds: base.distribution.appealRounds,
-      executionBudgetPerRound: base.distribution.executionBudgetPerRound,
-      rotations: base.distribution.rotations,
-      maxPriceGenPerTimeUnit: base.distribution.maxPriceGenPerTimeUnit,
-      storageFeeMaxGasPrice: base.distribution.storageFeeMaxGasPrice,
-      receiptFeeMaxGasPrice: base.distribution.receiptFeeMaxGasPrice,
-    }),
+  return client.estimateTransactionFees({
+    ...(feeOptions.executionBudgetPerRound !== undefined
+      ? { executionBudgetPerRound: feeOptions.executionBudgetPerRound }
+      : {}),
   });
 }
 
@@ -185,10 +115,6 @@ async function performWrite(opts: {
   arbitration?: boolean;
   /** Which contract to target; defaults to MetaTrial Core. */
   target?: string;
-  /** True when the write emits messages (AI arbitration calls, async
-   *  cross-contract notifications) - the fee distribution must declare a
-   *  message-fee budget for those emissions. */
-  emitsMessages?: boolean;
 }): Promise<WriteOutcome> {
   const client = createSigningClient(opts.walletAddress, opts.provider);
 
@@ -240,9 +166,10 @@ async function performWrite(opts: {
     // contracts (they validate the transaction timestamp, which simulated
     // gen_call does not carry), so simulating only burns three doomed RPC
     // retries before the same policy-based estimate.
-    const recommended = await (opts.emitsMessages === true
-      ? estimateEmittingWriteFees(client)
-      : estimatePolicyBasedFees(client, {}));
+    const executionBudgetFloor = await readExecutionBudgetFloor(client);
+    const recommended = await estimatePolicyBasedFees(client, {
+      executionBudgetPerRound: executionBudgetFloor ?? undefined,
+    });
     hash = await client.writeContract({
       ...call,
       fees: {
@@ -389,7 +316,6 @@ export async function triggerArbitration(opts: {
     functionName: "trigger_arbitration",
     label: "Start review",
     arbitration: true,
-    emitsMessages: true,
     args: [opts.disputeId],
   });
 }
@@ -412,7 +338,6 @@ export async function fileAppeal(opts: {
     functionName: "file_appeal",
     label: "File appeal",
     arbitration: true,
-    emitsMessages: true,
     value: opts.bondWei,
     args: [
       opts.disputeId,
@@ -437,7 +362,6 @@ export async function finalizeDispute(opts: {
     provider: opts.provider,
     functionName: "finalize",
     label: "Finalize case",
-    emitsMessages: true,
     args: [opts.disputeId],
   });
 }
@@ -453,7 +377,6 @@ export async function retryMirror(opts: {
     provider: opts.provider,
     functionName: "retry_mirror",
     label: "Retry registry mirror",
-    emitsMessages: true,
     args: [opts.disputeId],
   });
 }
