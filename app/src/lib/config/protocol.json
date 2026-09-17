@@ -19,6 +19,9 @@
   },
   "fees": {
     "executionBudgetPerRound": "156987300000000",
-    "source": "measured: fee profile of a successful AI write on this deployment (gencheck v5 live contract, paid_fee_value 627949200010352)"
+    "source": "measured: fee profile of a successful AI write on this deployment (gencheck v5 live contract, paid_fee_value 627949200010352) with arbitration headroom - MetaTrial's arbitration is heavier than a single AI call (evidence + precedent fetches, multi-call equivalence consensus), so leader/validator timeunit allocations are raised (3x) and consensus rotations extended (5) to keep validators from timing out. The deposit is refunded after execution.",
+    "consensusMaxRotations": 5,
+    "leaderTimeunitsAllocation": "300",
+    "validatorTimeunitsAllocation": "600"
   }
 }

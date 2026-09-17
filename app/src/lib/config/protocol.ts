@@ -28,6 +28,12 @@ export interface NetworkConfig {
  */
 export interface FeeProfileConfig {
   executionBudgetPerRound: string;
+  /** Leader rotation budget for the consensus train (SDK default: 3). */
+  consensusMaxRotations: number;
+  /** Validator compute-time allocations (timeunits) - raised from the SDK
+   *  defaults (100/200) for MetaTrial's heavier arbitration workload. */
+  leaderTimeunitsAllocation: string;
+  validatorTimeunitsAllocation: string;
   source: string;
 }
 

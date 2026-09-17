@@ -75,6 +75,23 @@ async function estimatePolicyBasedFees(
   });
 }
 
+/**
+ * Arbitration-grade estimate: the measured profile plus raised leader/
+ * validator timeunit allocations and an extended rotation budget, so the
+ * validators have enough compute time for MetaTrial's heavier arbitration
+ * (evidence and precedent fetches, multi-call equivalence consensus).
+ */
+async function estimateArbitrationFees(
+  client: ReturnType<typeof createSigningClient>,
+) {
+  return client.estimateTransactionFees({
+    executionBudgetPerRound: BigInt(FEES.executionBudgetPerRound),
+    leaderTimeunitsAllocation: BigInt(FEES.leaderTimeunitsAllocation),
+    validatorTimeunitsAllocation: BigInt(FEES.validatorTimeunitsAllocation),
+    rotations: [BigInt(FEES.consensusMaxRotations)],
+  });
+}
+
 async function performWrite(opts: {
   walletAddress: string;
   provider: Eip1193Provider | null;
@@ -136,12 +153,19 @@ async function performWrite(opts: {
     // contracts (they validate the transaction timestamp, which simulated
     // gen_call does not carry), so simulating only burns three doomed RPC
     // retries before the same policy-based estimate.
-    const recommended = await estimatePolicyBasedFees(client);
+    const recommended = await (opts.arbitration === true
+      ? estimateArbitrationFees(client)
+      : estimatePolicyBasedFees(client));
     hash = await client.writeContract({
       ...call,
+      // Arbitration writes rotate through more leaders (heavier workload):
+      // keep the consensus rotation budget consistent with the fee
+      // distribution's rotations.
+      ...(opts.arbitration === true
+        ? { consensusMaxRotations: FEES.consensusMaxRotations }
+        : {}),
       fees: {
         distribution: recommended.distribution,
-        messageAllocations: recommended.messageAllocations,
         feeValue: recommended.feeValue,
       },
     });
