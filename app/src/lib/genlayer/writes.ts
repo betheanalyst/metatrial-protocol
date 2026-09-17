@@ -1,7 +1,7 @@
 import { createClient, isSuccessful } from "genlayer-js";
 import { studioDevnet } from "genlayer-js/chains";
 import type { CalldataEncodable } from "genlayer-js/types";
-import { CONTRACTS } from "../config/protocol";
+import { CONTRACTS, FEES } from "../config/protocol";
 import { describeWriteFailure } from "../metatrial/write-errors";
 import type { Eip1193Provider } from "../wallet/injected";
 import { ensureStudioDevnet } from "../wallet/injected";
@@ -61,47 +61,17 @@ const RETRIES_SIMPLE = 100;
 const RETRIES_ARBITRATION = 240;
 
 /**
- * The network's own declared floor for per-round GenVM execution budgets,
- * read live from sim_getFeeConfig (genvmStartBudgetFloor). Returns
- * undefined when unavailable.
- */
-async function readExecutionBudgetFloor(
-  client: ReturnType<typeof createSigningClient>,
-): Promise<bigint | undefined> {
-  try {
-    const config = (await client.request({
-      method: "sim_getFeeConfig",
-      params: [],
-    })) as {
-      policy?: { genvmStartBudgetFloor?: string | number | bigint };
-    } | null;
-    const raw = config?.policy?.genvmStartBudgetFloor;
-    if (raw === undefined || raw === null) {
-      return undefined;
-    }
-    const floor = BigInt(String(raw));
-    return floor > 0n ? floor : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Policy-based fee estimate, tuned to a distribution this devnet's consensus
- * accepts (measured on a live AI write of the same shape: per-round GenVM
- * execution budget at the network's genvmStartBudgetFloor, totalMessageFees
- * zero, SDK-standard price caps with headroom, rotations from the chain's
- * consensus-max). The full deposit is taken up-front and the unused budget
- * is refunded after execution.
+ * Policy-based fee estimate tuned to the deployment's measured fee profile
+ * (protocol.json -> fees): the per-round GenVM execution budget of a
+ * successful AI write on this deployment. The SDK still reads the live fee
+ * policy for price caps; the full deposit is taken up-front and the unused
+ * budget is refunded after execution.
  */
 async function estimatePolicyBasedFees(
   client: ReturnType<typeof createSigningClient>,
-  feeOptions: { executionBudgetPerRound?: bigint },
 ) {
   return client.estimateTransactionFees({
-    ...(feeOptions.executionBudgetPerRound !== undefined
-      ? { executionBudgetPerRound: feeOptions.executionBudgetPerRound }
-      : {}),
+    executionBudgetPerRound: BigInt(FEES.executionBudgetPerRound),
   });
 }
 
@@ -166,10 +136,7 @@ async function performWrite(opts: {
     // contracts (they validate the transaction timestamp, which simulated
     // gen_call does not carry), so simulating only burns three doomed RPC
     // retries before the same policy-based estimate.
-    const executionBudgetFloor = await readExecutionBudgetFloor(client);
-    const recommended = await estimatePolicyBasedFees(client, {
-      executionBudgetPerRound: executionBudgetFloor ?? undefined,
-    });
+    const recommended = await estimatePolicyBasedFees(client);
     hash = await client.writeContract({
       ...call,
       fees: {

@@ -65,9 +65,14 @@ async function main() {
   console.log("");
 
   // -- Check 1: SDK initializes against Studio Devnet ----------------------
+  // Same RPC override the app adapter uses (config-driven endpoint).
+  const appChain = {
+    ...studioDevnet,
+    rpcUrls: { default: { http: [protocol.network.rpcUrl] } },
+  };
   let client;
   try {
-    client = createClient({ chain: studioDevnet });
+    client = createClient({ chain: appChain });
     report(
       "1. SDK init - genlayer-js createClient(studioDevnet)",
       true,

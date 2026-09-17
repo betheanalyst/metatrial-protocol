@@ -12,8 +12,23 @@ export interface NetworkConfig {
   chainId: number;
   chainIdHex: string;
   rpcUrl: string;
+  /** Optional secondary RPC for the same deployment (failover/manual use). */
+  alternativeRpcUrl?: string;
   nativeCurrency: NativeCurrencyConfig;
   blockExplorerUrl: string;
+}
+
+/**
+ * Consensus-level fee profile measured on this deployment: a successful AI
+ * write (full arbitration round) was executed with exactly this per-round
+ * execution budget. The deposit is taken up-front and the unused budget is
+ * refunded after execution. Consensus-level network configuration - not a
+ * governance parameter; read at fee-estimation time, never hard-coded in
+ * write logic.
+ */
+export interface FeeProfileConfig {
+  executionBudgetPerRound: string;
+  source: string;
 }
 
 export interface ContractsConfig {
@@ -25,6 +40,7 @@ export interface ContractsConfig {
 export interface ProtocolConfig {
   network: NetworkConfig;
   contracts: ContractsConfig;
+  fees: FeeProfileConfig;
 }
 
 /**
@@ -39,6 +55,7 @@ export const protocolConfig: ProtocolConfig = protocolJson;
 
 export const NETWORK = protocolConfig.network;
 export const CONTRACTS = protocolConfig.contracts;
+export const FEES = protocolConfig.fees;
 
 function assert(condition: unknown, message: string): asserts condition {
   if (condition === false || condition === undefined || condition === null) {

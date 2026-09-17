@@ -22,7 +22,14 @@ export function getReadClient(): GenLayerReadClient {
           `the configured MetaTrial chain id ${NETWORK.chainId}`,
       );
     }
-    cachedClient = createClient({ chain: studioDevnet });
+    // The SDK chain preset carries its own RPC - override it with the
+    // configured MetaTrial RPC so client, wallet, and gate all talk to the
+    // same endpoint (centralized configuration rule).
+    const chain = {
+      ...studioDevnet,
+      rpcUrls: { default: { http: [NETWORK.rpcUrl] } },
+    } as typeof studioDevnet;
+    cachedClient = createClient({ chain });
   }
   return cachedClient;
 }
