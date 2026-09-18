@@ -1,7 +1,6 @@
 import { useQuery, useQueries, type UseQueryResult } from "@tanstack/react-query";
 import {
   CATEGORY_PAGE_SIZE,
-  ContractReadError,
   getAppealHistory,
   getAttestationByDispute,
   getCategoryDisputeCount,
@@ -44,12 +43,21 @@ export const queryKeys = {
     ["metatrial", "attestation", disputeId] as const,
 };
 
-/** Permanent contract errors (not-found etc.) must not be retried. */
-function retryPolicy(failureCount: number, error: unknown): boolean {
-  if (error instanceof ContractReadError) {
+/**
+ * Shared React Query retry policy (also exported for the explore view's
+ * inline queries): permanent contract errors (not-found etc.) are never
+ * retried; transport blips get one query-level retry on top of the read
+ * adapter's bounded per-attempt failover.
+ */
+export function retryPolicy(failureCount: number, error: unknown): boolean {
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    (error as { name?: unknown }).name === "ContractReadError"
+  ) {
     return false;
   }
-  return failureCount < 2;
+  return failureCount < 1;
 }
 
 export function useProtocolInfo() {

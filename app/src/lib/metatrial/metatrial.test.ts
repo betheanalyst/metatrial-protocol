@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { ContractReadError, extractContractMessage } from "@/lib/genlayer/errors";
 import {
   parseDisputeId,
@@ -299,5 +299,88 @@ describe("contract error translation", () => {
   it("exposes a stable code on ContractReadError", () => {
     const error = new ContractReadError("\u0001ERR:DISPUTE_NOT_FOUND");
     expect(error.code).toBe("ERR:DISPUTE_NOT_FOUND");
+  });
+});
+
+const { primaryRead, alternativeRead } = vi.hoisted(() => ({
+  primaryRead: vi.fn(),
+  alternativeRead: vi.fn(),
+}));
+
+vi.mock("@/lib/genlayer/client", () => ({
+  // The RPC pool the read adapter fails over across: primary first.
+  getReadClients: () => [
+    { readContract: primaryRead },
+    { readContract: alternativeRead },
+  ],
+  getReadClient: () => ({ readContract: primaryRead }),
+}));
+
+describe("read adapter resilience (RPC retry + failover)", () => {
+  beforeEach(() => {
+    primaryRead.mockReset();
+    alternativeRead.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("absorbs a transient blip on the primary and fails over to the alternative", async () => {
+    const { getProtocolInfo } = await import("@/lib/genlayer/reads");
+    primaryRead.mockRejectedValueOnce(new TypeError("fetch failed"));
+    alternativeRead.mockResolvedValueOnce({ version: 11, total_disputes: 0 });
+
+    const info = await getProtocolInfo();
+    expect(info.version).toBe(11);
+    expect(primaryRead).toHaveBeenCalledTimes(1);
+    expect(alternativeRead).toHaveBeenCalledTimes(1);
+  });
+
+  it("normalizes JSON-string view results after failover", async () => {
+    const { getDisputesByCategory } = await import("@/lib/genlayer/reads");
+    primaryRead.mockRejectedValueOnce(new Error("read timed out after 12000ms"));
+    alternativeRead.mockResolvedValueOnce(
+      JSON.stringify(["MT-00000001-1a2b3c4d", "MT-00000002-1a2b3c4d"]),
+    );
+
+    const ids = await getDisputesByCategory("CONTRACT", 0, 2);
+    expect(ids).toEqual(["MT-00000001-1a2b3c4d", "MT-00000002-1a2b3c4d"]);
+  });
+
+  it("gives up after bounded attempts and describes the outage honestly", async () => {
+    const { getProtocolInfo } = await import("@/lib/genlayer/reads");
+    primaryRead.mockRejectedValue(new TypeError("fetch failed"));
+    alternativeRead.mockRejectedValue(new TypeError("fetch failed"));
+
+    await expect(getProtocolInfo()).rejects.toThrow(/temporarily unreachable/);
+    // Bounded: 3 attempts across the 2-endpoint pool (primary, alternative,
+    // primary again) - not an unbounded retry storm.
+    expect(primaryRead).toHaveBeenCalledTimes(2);
+    expect(alternativeRead).toHaveBeenCalledTimes(1);
+  });
+
+  it("never retries deterministic contract errors", async () => {
+    const { getProtocolInfo } = await import("@/lib/genlayer/reads");
+    const BASE64_ERR = Buffer.from("\u0001ERR:DISPUTE_NOT_FOUND").toString("base64");
+    primaryRead.mockRejectedValueOnce({
+      message: "Missing or invalid parameters.",
+      cause: {
+        code: -32000,
+        message: "execution failed",
+        data: { receipt: { execution_result: "ERROR", result: BASE64_ERR } },
+      },
+    });
+
+    const error = await getProtocolInfo().then(
+      () => {
+        throw new Error("expected rejection");
+      },
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(ContractReadError);
+    expect((error as ContractReadError).code).toBe("ERR:DISPUTE_NOT_FOUND");
+    expect(primaryRead).toHaveBeenCalledTimes(1);
+    expect(alternativeRead).toHaveBeenCalledTimes(0);
   });
 });

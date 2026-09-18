@@ -11,6 +11,7 @@ import {
   getProtocolInfo,
   getVerdict,
 } from "@/lib/genlayer/reads";
+import { retryPolicy } from "@/lib/metatrial/queries";
 import { toCaseDetail } from "@/lib/metatrial/mappers";
 import { categoryLabel, rulingLabel } from "@/lib/metatrial/labels";
 import type { CaseDetail } from "@/lib/metatrial/types";
@@ -68,6 +69,7 @@ export function ExploreView() {
     queryKey: ["metatrial", "protocol-info"],
     queryFn: getProtocolInfo,
     staleTime: 5 * 60_000,
+    retry: retryPolicy,
   });
   const categories = protocolInfoQuery.data?.valid_categories ?? [];
 
@@ -84,6 +86,7 @@ export function ExploreView() {
     },
     enabled: categories.length > 0,
     staleTime: 30_000,
+    retry: retryPolicy,
   });
 
   const counts = countsQuery.data ?? {};
@@ -104,6 +107,7 @@ export function ExploreView() {
     },
     enabled: nonEmpty.length > 0,
     staleTime: 30_000,
+    retry: retryPolicy,
   });
 
   const tailIds = tailsQuery.data ?? [];
@@ -112,6 +116,7 @@ export function ExploreView() {
       queryKey: ["metatrial", "dispute", disputeId],
       queryFn: async () => toCaseDetail(await getDispute(disputeId)),
       staleTime: 15_000,
+      retry: retryPolicy,
     })),
   });
 
@@ -132,6 +137,7 @@ export function ExploreView() {
           ruling: rulingLabel((await getVerdict(entry.detail.id)).ruling),
         }),
         staleTime: 60_000,
+        retry: retryPolicy,
       })),
   });
 
@@ -206,6 +212,20 @@ export function ExploreView() {
               </li>
             ))}
           </ul>
+        ) : tailsQuery.isError ? (
+          <div className="mt-4 rounded-xl border border-line bg-white px-5 py-4 text-sm text-muted">
+            The record index could not be read right now - the network may be
+            briefly unavailable.{" "}
+            <button
+              type="button"
+              onClick={() => {
+                void tailsQuery.refetch();
+              }}
+              className="font-medium text-attest-deep underline underline-offset-4"
+            >
+              Try again
+            </button>
+          </div>
         ) : withRulings.length === 0 ? (
           <p className="mt-4 text-sm text-muted">
             No cases filed yet - the first cases will appear here as they enter

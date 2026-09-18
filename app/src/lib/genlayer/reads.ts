@@ -6,7 +6,7 @@ import type {
   DisputeRaw,
   VerdictRaw,
 } from "../metatrial/types";
-import { getReadClient } from "./client";
+import { getReadClients } from "./client";
 import {
   ContractReadError,
   extractContractMessage,
@@ -18,36 +18,138 @@ export { ContractReadError, extractContractMessage } from "./errors";
 /* Read adapter - the only place talking to GenLayer contracts          */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Per-HTTP-attempt cap. The Studio RPC occasionally accepts a connection
+ * and then stalls; without a deadline such a read hangs for the browser's
+ * full timeout, which users experience as the app "lagging". A read that
+ * has not answered in this window is treated as a transient failure and
+ * retried (with failover to the alternative RPC) instead.
+ */
+const READ_ATTEMPT_TIMEOUT_MS = 12_000;
+
+/**
+ * Bounded total attempts across the whole RPC pool (primary + alternative).
+ * Three attempts survive: one blip on the primary, one blip on the
+ * alternative, and one more round - while still finishing quickly enough
+ * that a genuinely-down network surfaces as an honest error state rather
+ * than a long hang.
+ */
+const READ_MAX_ATTEMPTS = 3;
+
+/** Small, constant pause between attempts (no backoff sprawl). */
+const READ_RETRY_DELAY_MS = 250;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * True for transport-level failures (network blips, timeouts, 5xx) that a
+ * retry against the same or the alternative RPC can plausibly fix. False
+ * for deterministic outcomes (contract revert messages, malformed args),
+ * which must surface immediately - retrying them would only add lag.
+ */
+function isTransientReadError(error: unknown): boolean {
+  if (error instanceof ContractReadError) {
+    return false;
+  }
+  const message =
+    error instanceof Error
+      ? `${error.name} ${error.message}`
+      : String(error);
+  return (
+    /fetch failed/i.test(message) ||
+    /timeout|timed?\s*out|aborted?/i.test(message) ||
+    /ECONN|ENOTFOUND|EAI_AGAIN|network/i.test(message) ||
+    /\b5\d\d\b/.test(message)
+  );
+}
+
+/**
+ * Rejects if the underlying call has not settled within the per-attempt
+ * deadline. The client call keeps running in the background (there is no
+ * SDK-level cancellation), but the read adapter stops waiting on it.
+ */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`read timed out after ${ms}ms`)),
+      ms,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 async function readView(
   address: string,
   functionName: string,
   args: CalldataEncodable[] = [],
 ): Promise<unknown> {
-  const client = getReadClient();
-  let result: unknown;
-  try {
-    result = await client.readContract({
-      address: address as `0x${string}`,
-      functionName,
-      args,
-      jsonSafeReturn: true,
-    });
-  } catch (error) {
-    const contractMessage = extractContractMessage(error);
-    if (contractMessage !== null) {
-      throw new ContractReadError(contractMessage);
-    }
-    throw error;
-  }
-  // Some GenLayer view results arrive as JSON strings; normalize to objects.
-  if (typeof result === "string") {
+  const clients = getReadClients();
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < READ_MAX_ATTEMPTS; attempt++) {
+    // Failover order: primary, alternative, primary. A single request
+    // blip on either endpoint is absorbed here instead of surfacing as
+    // "case index unavailable" or an empty-looking page.
+    const client = clients[attempt % clients.length];
     try {
-      return JSON.parse(result);
-    } catch {
-      return result;
+      return await withDeadline(
+        (async () => {
+          const result = await client.readContract({
+            address: address as `0x${string}`,
+            functionName,
+            args,
+            jsonSafeReturn: true,
+          });
+          // Some GenLayer view results arrive as JSON strings; normalize
+          // to objects.
+          if (typeof result === "string") {
+            try {
+              return JSON.parse(result);
+            } catch {
+              return result;
+            }
+          }
+          return result;
+        })(),
+        READ_ATTEMPT_TIMEOUT_MS,
+      );
+    } catch (error) {
+      const contractMessage = extractContractMessage(error);
+      if (contractMessage !== null) {
+        // A deterministic contract outcome (not-found, invalid args):
+        // never retried, never masked as "unavailable".
+        throw new ContractReadError(contractMessage);
+      }
+      lastError = error;
+      if (attempt + 1 < READ_MAX_ATTEMPTS && isTransientReadError(error)) {
+        await sleep(READ_RETRY_DELAY_MS);
+        continue;
+      }
+      if (isTransientReadError(error)) {
+        // Retries exhausted on a transient failure: describe it as the
+        // transport-level outage it is, so every consumer (and the
+        // React Query retry policy) can treat it uniformly.
+        throw new Error(
+          `MetaTrial RPC temporarily unreachable (${functionName}): ` +
+            (error instanceof Error ? error.message : String(error)),
+        );
+      }
+      throw error;
     }
   }
-  return result;
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`MetaTrial RPC temporarily unreachable (${functionName})`);
 }
 
 async function readCore(functionName: string, args: CalldataEncodable[] = []): Promise<unknown> {
