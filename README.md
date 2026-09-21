@@ -504,6 +504,16 @@ verification never require one.
   the precedent corpus is future work.
 - **Governance proposal creation** is UI-supported and admin-gated; ordinary users can never
   reach it.
+- **Respondent evidence content is not exposed by `get_dispute()`.** The view currently
+  returns claimant evidence in full (`claimant_ev_type`, `claimant_ev_content`,
+  `claimant_ev_hash`) but only `respondent_ev_type` and `respondent_ev_hash` for the
+  respondent's side — `respondent_ev_content` is never included in the returned dict. This
+  is an oversight, not a deliberate privacy design: `get_dispute()`'s own docstring describes
+  it as the "full dispute record" and disputes generally as "public on-chain." The UI
+  surfaces this plainly (*"The evidence content itself is not exposed by the contract
+  view"*) rather than showing a blank or broken field. A fix — mirroring the claimant's
+  exposed fields exactly — is planned for the next contract version; because it changes
+  Core's read interface, it requires a redeployment rather than a hot patch.
 
 ## Contributing
 
